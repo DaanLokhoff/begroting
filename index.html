@@ -246,7 +246,7 @@ input[type=range]{width:100%;accent-color:var(--ib)}
   <div class="card stack importer" id="importer" hidden>
     <div>
       <h2>Importeren uit <span id="impFile"></span></h2>
-      <p class="lede">Kies het tabblad. De app leest zelf uit wat erin staat.</p>
+      <p class="lede">De app heeft het bestand doorzocht. Kies eventueel een ander tabblad en controleer de regels.</p>
     </div>
     <label class="field imp-sheet" for="impSheet">Tabblad<select id="impSheet"></select></label>
     <p id="impCount" class="imp-count"></p>
@@ -256,25 +256,6 @@ input[type=range]{width:100%;accent-color:var(--ib)}
       <button class="btn ghost" id="impAppend">Toevoegen aan begroting</button>
       <button class="btn" id="impReplace">Begroting vervangen</button>
     </div>
-    <details class="imp-adv">
-      <summary>Klopt het niet? Herkenning aanpassen</summary>
-      <div class="stack" style="margin-top:12px">
-        <label class="field" for="impHead">Rij met kolomnamen<select id="impHead"></select></label>
-        <h3>Kolommen</h3>
-        <div class="imp-grid" id="impMap"></div>
-        <div id="impMonthWrap" hidden>
-          <label class="check" for="impMonths"><input type="checkbox" id="impMonths"> Bedragen per maand staan in aparte kolommen: gebruik het gemiddelde per maand</label>
-          <p class="note" id="impMonthNote"></p>
-        </div>
-        <h3>Als het bestand dit niet vermeldt</h3>
-        <div class="imp-grid">
-          <label class="field" for="impDefScope" id="impDefScopeWrap">Privé of zakelijk<select id="impDefScope"><option value="auto">Automatisch</option><option value="prive">Alles privé</option><option value="zakelijk">Alles zakelijk</option></select></label>
-          <label class="field" for="impDefType" id="impDefTypeWrap">Inkomsten of uitgaven<select id="impDefType"><option value="auto">Automatisch</option><option value="uit">Alles uitgaven</option><option value="in">Alles inkomsten</option><option value="sign">Negatief bedrag = uitgave</option></select></label>
-          <label class="field" for="impDefFreq">Frequentie<select id="impDefFreq"><option value="auto">Automatisch</option><option value="maand">Per maand</option><option value="kwartaal">Per kwartaal</option><option value="jaar">Per jaar</option></select></label>
-        </div>
-        <label class="check" for="impSkipTot"><input type="checkbox" id="impSkipTot" checked> Sla regels met totaal, subtotaal of saldo over</label>
-      </div>
-    </details>
   </div>
 
   <div class="banner" id="sampleBanner" hidden style="margin-top:16px">
@@ -833,188 +814,200 @@ async function exportXlsx(){
   }
 }
 
-/* ---------- import wizard: read file, choose sheet, map columns, preview ---------- */
-const FIELDS = [
-  ["name","Omschrijving",true],["amt","Bedrag",true],["amtOut","Bedrag uitgaven (aparte kolom)",false],
-  ["cat","Categorie",false],["scope","Privé / zakelijk",false],["type","Inkomsten / uitgaven",false],
-  ["freq","Frequentie",false],["btw","BTW %",false],["mo","Betaalmaand",false],["note","Opmerking",false],
-];
-const GUESS = {
-  name:["omschrijving","naam","post","item","beschrijving","description","onderwerp","titel","rubriek"],
-  amt:["bedrag","amount","maandbedrag","bedragpermaand","permaand","inkomsten","bij","totaal","prijs","waarde","euro","eur","kosten"],
-  amtOut:["uitgaven","af","uit"],
-  cat:["categorie","category","groep","rubriek"],
-  scope:["soort","scope","privezakelijk","priveofzakelijk"],
-  type:["type","inuit","inkomstenuitgaven","bijaf","afbij"],
-  freq:["frequentie","periode","interval","termijn"],
-  btw:["btw%","btw","btwtarief","vat"],
-  mo:["betaalmaand","maand"],
-  note:["opmerking","opmerkingen","notitie","notities","toelichting","commentaar","memo"],
-};
-const MONTH_KEYS = MONTHS_LONG.map(m => m.slice(0,3)).concat(["mrt"]);
-let imp = null, pending = null;
+/* ---------- import: scan each sheet, find description and amount columns by itself ---------- */
+const MONTH_KEYS = ["jan","feb","maa","apr","mei","jun","jul","aug","sep","okt","nov","dec"];
+const MONTH_KEYS_EN = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+let imp = null;
 
 function parseMonth(v){
   const n = Math.round(num(v)); if (n >= 1 && n <= 12) return n;
-  const s = norm(v).slice(0,3); if (!s) return 1;
-  let i = MONTHS.indexOf(s);
-  if (i < 0) i = MONTHS_LONG.findIndex(x => x.startsWith(s));
-  if (i < 0) i = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(s);
-  return i >= 0 ? i + 1 : 1;
+  const i = monthIdx(v); return i >= 0 ? i + 1 : 1;
+}
+function monthIdx(v){
+  const s = norm(v); if (!s || s.length > 9) return -1;
+  const k = s.slice(0,3);
+  if (k === "mrt") return 2;
+  let i = MONTH_KEYS.indexOf(k); if (i < 0) i = MONTH_KEYS_EN.indexOf(k);
+  return i;
 }
 const cellText = v => v instanceof Date ? v.toLocaleDateString("nl-NL") : String(v ?? "").trim();
-const colLetter = i => XLSX.utils.encode_col(i);
+const NUMSTR = /^[-−]?\s*€?\s*[-−]?\s*\d[\d.\s]*(,\d+)?\s*€?$/;
+const isNumCell = v => (typeof v === "number" && isFinite(v)) || (typeof v === "string" && NUMSTR.test(v.trim()));
+const isTextCell = v => typeof v === "string" && v.trim() !== "" && !isNumCell(v);
+const cellNum = v => typeof v === "number" ? v : num(String(v).replace(/−/g, "-"));
+const KW_SCOPE = /^(prive|privé|zakelijk|zak|bedrijf)$/i;
+const KW_TYPE = /^(inkomsten|inkomst|inkomen|uitgaven|uitgave|in|uit|bij|af)$/i;
+const KW_FREQ = /^(per )?(maand|maandelijks|mnd|kwartaal|kw|jaar|jaarlijks|jr)$/i;
+const isKw = s => KW_SCOPE.test(s) || KW_TYPE.test(s) || KW_FREQ.test(s) || monthIdx(s) >= 0;
+const IN_WORDS = /salaris|loon|inkomen|inkomst|omzet|toeslag|uitkering|kinderbijslag|pensioen|\baow\b|ontvang|opbrengst|verhuur|dividend|bijverdien|freelance|opdracht|teruggave|factur/;
+const SEC_IN = /^(inkomsten|inkomen|ontvangsten|omzet|opbrengsten|baten)\b/;
+const SEC_OUT = /^(uitgaven|vaste lasten|vaste kosten|lasten|kosten|variabele (kosten|lasten|uitgaven)|huishoudelijke uitgaven|reserveringen|sparen)\b/;
+const TOTAL = /^(sub)?tota(al|len)|^saldo|^som\b|^resultaat|^over\b|^tekort|^netto (resultaat|over)/;
+const typeOfText = s => /inkomst|inkomen|ontvang|\bbij\b|omzet|credit|opbrengst/.test(s) ? "in" : /uitgave|kosten|lasten|\baf\b|debet|betaald/.test(s) ? "uit" : null;
+const freqOfText = s => /kwartaal|\bkw\b/.test(s) ? "kwartaal" : /jaar|jaarlijks|\bjr\b|p\.?j\.?/.test(s) ? "jaar" : /maand|\bmnd\b|p\.?m\.?/.test(s) ? "maand" : null;
 
-function sheetRows(name){
-  const ws = imp.wb.Sheets[name];
+function sheetRows(wb, name){
+  const ws = wb.Sheets[name];
   if (!ws || !ws["!ref"]) return [];
-  return XLSX.utils.sheet_to_json(ws, {header:1, defval:"", raw:true, blankrows:false});
+  return XLSX.utils.sheet_to_json(ws, {header:1, defval:"", raw:true, blankrows:true});
 }
-function detectHeader(rows){
-  const known = Object.values(GUESS).flat();
-  for (let i = 0; i < Math.min(rows.length, 20); i++){
-    const cells = rows[i].map(norm).filter(Boolean);
-    if (cells.filter(c => known.includes(c)).length >= 1 && rows[i].filter(c => typeof c === "string" && c.trim()).length >= 2) return i;
+function transpose(g){
+  const W = Math.max(0, ...g.map(r => r.length));
+  return Array.from({length:W}, (_, c) => g.map(r => r[c] ?? ""));
+}
+
+function scanGrid(g, sheetName){
+  const H = g.length, W = Math.max(0, ...g.map(r => r.length));
+  if (!H || !W) return [];
+  const at = (r, c) => (g[r] || [])[c];
+  const sn = sheetName.toLowerCase();
+  const sheetScope = /zak|bedrijf|onderneming|\bbv\b|vof/.test(sn) ? "zakelijk" : null;
+  const sheetFreq = freqOfText(sn);
+
+  // per column: how many numbers / texts, how varied, header above first number
+  const numc = [], txtc = [], distinct = [], kwShare = [], heads = [];
+  for (let c = 0; c < W; c++){
+    let n = 0, t = 0, kw = 0, first = -1; const set = new Set();
+    for (let r = 0; r < H; r++){
+      const v = at(r, c);
+      if (isNumCell(v)){ n++; if (first < 0) first = r; }
+      else if (isTextCell(v)){ t++; const s = v.trim(); set.add(s.toLowerCase()); if (isKw(s)) kw++; }
+    }
+    let head = "";
+    for (let r = first - 1; first > 0 && r >= Math.max(0, first - 4); r--) if (isTextCell(at(r, c))){ head = at(r, c).trim(); break; }
+    numc[c] = n; txtc[c] = t; distinct[c] = set.size; kwShare[c] = t ? kw / t : 0; heads[c] = head.toLowerCase();
   }
-  const i = rows.findIndex(r => r.filter(c => typeof c === "string" && c.trim()).length >= 2);
-  return i < 0 ? 0 : i;
-}
-function guessMap(head, rows){
-  const h = head.map(norm), used = new Set(), map = {};
-  for (const [f] of FIELDS){
-    let idx = -1;
-    for (const k of GUESS[f]){ idx = h.findIndex((x, i) => x === k && !used.has(i)); if (idx >= 0) break; }
-    if (idx < 0) for (const k of GUESS[f]){ if (k.length < 4) continue; idx = h.findIndex((x, i) => x.includes(k) && !used.has(i)); if (idx >= 0) break; }
-    if (idx >= 0){ map[f] = idx; used.add(idx); } else map[f] = -1;
+  const minN = H > 6 ? 2 : 1;
+  const colNums = c => g.map(r => r[c]).filter(isNumCell).map(cellNum);
+  const isBtwCol = c => /btw|vat|tarief|%/.test(heads[c]);
+  const isSkipCol = c => {
+    if (/^(nr\.?|nummer|no\.?|#|datum|dag|betaalmaand|rekening.*|iban|code)$/.test(heads[c])) return true;
+    const v = colNums(c);
+    if (v.length && v.every(x => Number.isInteger(x) && x >= 1900 && x <= 2100)) return true;
+    if (/maand/.test(heads[c]) && v.every(x => Number.isInteger(x) && x >= 1 && x <= 12)) return true;
+    return false;
+  };
+  const amount = new Set(), btwCols = [];
+  for (let c = 0; c < W; c++){
+    if (numc[c] < minN) continue;
+    if (isBtwCol(c)) btwCols.push(c); else if (!isSkipCol(c)) amount.add(c);
   }
-  // amtOut only makes sense next to a separate income column
-  if (map.amtOut >= 0 && map.amt < 0){ map.amt = map.amtOut; map.amtOut = -1; }
-  if (map.amtOut >= 0 && !/^(inkomsten|bij|in)$/.test(h[map.amt] || "")){ used.delete(map.amtOut); map.amtOut = -1; }
-  // fallbacks: first text column for name, first mostly-numeric column for amount
-  const body = rows.slice(0, 30);
-  if (map.name < 0){ const i = head.findIndex((_, c) => !used.has(c) && body.filter(r => typeof r[c] === "string" && r[c].trim()).length >= body.length / 2); if (i >= 0){ map.name = i; used.add(i); } }
-  if (map.amt < 0){ const i = head.findIndex((_, c) => !used.has(c) && body.filter(r => typeof r[c] === "number").length >= Math.max(1, body.length / 3)); if (i >= 0){ map.amt = i; used.add(i); } }
-  return map;
+  if (!amount.size) return [];
+
+  // split the sheet into blocks: [text columns] [amount columns] [trailing text]
+  const blocks = []; let cur = null;
+  for (let c = 0; c < W; c++){
+    if (amount.has(c)){
+      if (!cur) cur = {pre:[], amts:[], post:[]};
+      else if (cur.amts.length && cur.post.some(t => kwShare[t] < .6)){
+        const moved = cur.post.filter(t => kwShare[t] < .6);
+        cur.post = cur.post.filter(t => kwShare[t] >= .6);
+        blocks.push(cur); cur = {pre:moved, amts:[], post:[]};
+      }
+      cur.amts.push(c);
+    } else if (txtc[c] >= minN){
+      if (!cur) cur = {pre:[], amts:[], post:[]};
+      (cur.amts.length ? cur.post : cur.pre).push(c);
+    }
+  }
+  if (cur && cur.amts.length) blocks.push(cur);
+
+  const lines = [];
+  blocks.forEach((b, bi) => {
+    const textCols = b.pre.filter(c => kwShare[c] < .6).sort((x, y) => distinct[y] - distinct[x] || x - y);
+    const label = textCols[0] ?? b.pre[b.pre.length - 1];
+    if (label === undefined) return;
+    const cat = textCols.find(c => c !== label);
+    const kwCols = b.pre.concat(b.post).filter(c => kwShare[c] >= .6);
+    const note = b.post.find(c => kwShare[c] < .6);
+    const end = blocks[bi + 1] ? Math.min(...blocks[bi + 1].pre, ...blocks[bi + 1].amts) : W;
+    const btw = btwCols.find(c => c > label && c < end);
+    const months = b.amts.filter(c => monthIdx(heads[c]) >= 0);
+    const cls = b.amts.map(c => ({c, type:typeOfText(heads[c]), freq:freqOfText(heads[c]), total:/totaal|saldo|cumul|gemiddeld/.test(heads[c])}));
+    const hasIn = cls.some(x => x.type === "in"), hasOut = cls.some(x => x.type === "uit");
+    const mode = months.length >= 3 ? "months" : (hasIn && hasOut) ? "split" : "single";
+    const prim = cls.filter(x => !x.total && monthIdx(heads[x.c]) < 0)
+      .sort((x, y) => (y.freq === "maand") - (x.freq === "maand") || numc[y.c] - numc[x.c])[0] || cls[0];
+
+    let secType = null, secScope = null;
+    for (let r = 0; r < H; r++){
+      let name = isTextCell(at(r, label)) ? at(r, label).trim() : "";
+      const ln = name.toLowerCase();
+      let amt = null, type = null, freq = null;
+      if (mode === "months"){
+        const vals = months.map(c => at(r, c)).filter(isNumCell).map(cellNum);
+        if (vals.length) amt = vals.reduce((s, x) => s + x, 0) / months.length;
+        freq = "maand";
+      } else if (mode === "split"){
+        const inC = cls.find(x => x.type === "in"), outC = cls.find(x => x.type === "uit");
+        const vi = isNumCell(at(r, inC.c)) ? cellNum(at(r, inC.c)) : 0, vo = isNumCell(at(r, outC.c)) ? cellNum(at(r, outC.c)) : 0;
+        if (vi){ amt = vi; type = "in"; freq = inC.freq; } else if (vo){ amt = vo; type = "uit"; freq = outC.freq; }
+      } else if (isNumCell(at(r, prim.c))){
+        amt = cellNum(at(r, prim.c)); type = prim.type; freq = prim.freq;
+      }
+      if (!amt){
+        if (name){
+          if (SEC_IN.test(ln)) secType = "in"; else if (SEC_OUT.test(ln)) secType = "uit";
+          if (/^zakelijk|^bedrijf|^onderneming/.test(ln)) secScope = "zakelijk"; else if (/^priv/.test(ln)) secScope = "prive";
+        }
+        continue;
+      }
+      if (!name && cat !== undefined && isTextCell(at(r, cat))) name = at(r, cat).trim();
+      if (!name || TOTAL.test(name.toLowerCase()) || monthIdx(name) >= 0) continue;
+      // keyword cells in this row: Privé/Zakelijk, Inkomsten/Uitgaven, maand/jaar, betaalmaand
+      let kScope = null, kType = null, kFreq = null, kMonth = null;
+      for (const c of kwCols){
+        const s = cellText(at(r, c)); if (!s) continue;
+        if (KW_SCOPE.test(s)) kScope = /^zak|^bedr/i.test(s) ? "zakelijk" : "prive";
+        else if (KW_TYPE.test(s)) kType = /^(in|bij)/i.test(s) ? "in" : "uit";
+        else if (KW_FREQ.test(s)) kFreq = freqOfText(s.toLowerCase());
+        else if (monthIdx(s) >= 0) kMonth = monthIdx(s) + 1;
+      }
+      type = kType || type || secType || (amt < 0 ? "uit" : null) || (IN_WORDS.test(ln + " " + cellText(cat !== undefined ? at(r, cat) : "").toLowerCase()) ? "in" : "uit");
+      freq = mode === "months" ? "maand" : (kFreq || freq || sheetFreq || "maand");
+      const btwRaw = btw !== undefined ? cellText(at(r, btw)).replace("%", "") : "";
+      const scope = kScope || secScope || sheetScope || (btwRaw !== "" ? "zakelijk" : "prive");
+      let btwPct = 0;
+      if (scope === "zakelijk"){ const v = btwRaw === "" ? 21 : num(btwRaw); btwPct = Math.round(v > 0 && v < 1 ? v * 100 : v); if (![21,9,0].includes(btwPct)) btwPct = 21; }
+      lines.push({id:uid(), scope, type, name, cat:cat !== undefined ? cellText(at(r, cat)) : "", amount:Math.round(Math.abs(amt) * 100) / 100, freq, btw:btwPct, month:kMonth || 1, note:note !== undefined ? cellText(at(r, note)) : ""});
+    }
+  });
+  return lines;
 }
-function monthCols(head){
-  const out = [];
-  head.forEach((c, i) => { const s = norm(c).slice(0,3); if (MONTH_KEYS.includes(s) && norm(c).length <= 9) out.push(i); });
-  return out.length >= 3 ? out : [];
+function scanSheet(wb, name){
+  const g = sheetRows(wb, name);
+  const a = scanGrid(g, name), b = scanGrid(transpose(g), name);
+  return b.length > a.length * 1.5 ? b : a;
 }
 
 function openImporter(wb, fileName){
-  imp = {wb, fileName};
+  const found = {};
+  for (const n of wb.SheetNames){ try { found[n] = scanSheet(wb, n); } catch(e){ found[n] = []; } }
+  const withLines = wb.SheetNames.filter(n => found[n].length);
+  imp = {wb, fileName, found};
   $("#impFile").textContent = fileName;
+  const own = wb.SheetNames.find(n => norm(n) === "regels" && found[n].length);
+  const best = own || withLines.reduce((a, n) => found[n].length > found[a].length ? n : a, withLines[0] || wb.SheetNames[0]);
+  const all = withLines.reduce((s, n) => s + found[n].length, 0);
+  $("#impSheet").innerHTML = (withLines.length > 1 && !own ? `<option value="*">Alle tabbladen (${all} regels)</option>` : "") +
+    wb.SheetNames.map(n => `<option value="${esc(n)}" ${n === best ? "selected" : ""}>${esc(n)} (${found[n].length ? found[n].length + (found[n].length === 1 ? " regel" : " regels") : "niets gevonden"})</option>`).join("");
   $("#importBar").hidden = true;
   $("#importer").hidden = false;
-  $("#importer details").open = false;
-  ["#impDefScope","#impDefType","#impDefFreq"].forEach(s => $(s).value = "auto");
-  $("#impSkipTot").checked = true;
-  // scan every sheet and pick the one with the most budget lines
-  const found = {};
-  for (const n of wb.SheetNames){ try { loadSheet(n); found[n] = imp.lines.length; } catch(e){ found[n] = 0; } }
-  const pref = wb.SheetNames.find(n => norm(n) === "regels" && found[n]) || wb.SheetNames.reduce((a, n) => found[n] > found[a] ? n : a, wb.SheetNames[0]);
-  $("#impSheet").innerHTML = wb.SheetNames.map(n => `<option value="${esc(n)}" ${n===pref?"selected":""}>${esc(n)} (${found[n] ? found[n] + (found[n]===1 ? " regel" : " regels") : "niets gevonden"})</option>`).join("");
-  loadSheet(pref);
+  previewImport();
   $("#importer").scrollIntoView({block:"start", behavior:"smooth"});
 }
-function loadSheet(name, headerRow){
-  imp.sheet = name;
-  imp.rows = sheetRows(name);
-  imp.head = headerRow ?? detectHeader(imp.rows);
-  $("#impHead").innerHTML = imp.rows.slice(0, 25).map((r, i) => `<option value="${i}" ${i===imp.head?"selected":""}>Rij ${i+1}: ${esc(r.map(cellText).filter(Boolean).slice(0,4).join(" · ").slice(0,60)) || "(leeg)"}</option>`).join("") || `<option value="0">Geen gegevens op dit tabblad</option>`;
-  const head = imp.rows[imp.head] || [];
-  const body = imp.rows.slice(imp.head + 1);
-  imp.map = guessMap(head, body);
-  imp.months = monthCols(head);
-  if (imp.months.includes(imp.map.amt)) imp.map.amt = -1;
-  $("#impMonthWrap").hidden = !imp.months.length;
-  $("#impMonths").checked = imp.months.length > 0 && imp.map.amt < 0;
-  $("#impMonthNote").textContent = imp.months.length ? `${imp.months.length} maandkolommen gevonden (${imp.months.map(i => cellText(head[i])).join(", ")}).` : "";
-  const width = Math.max(head.length, ...body.slice(0, 50).map(r => r.length), 0);
-  const opts = ['<option value="-1">— niet gebruiken —</option>'].concat(Array.from({length:width}, (_, i) => `<option value="${i}">${colLetter(i)}: ${esc(cellText(head[i]) || "(geen naam)")}</option>`)).join("");
-  $("#impMap").innerHTML = FIELDS.map(([f, label, req]) => `<label class="field" for="map-${f}">${label}${req ? " *" : ""}<select id="map-${f}" data-map="${f}">${opts}</select></label>`).join("");
-  for (const [f] of FIELDS) $("#map-" + f).value = imp.map[f];
-  const hasScope = imp.map.scope >= 0, hasType = imp.map.type >= 0 || imp.map.amtOut >= 0;
-  $("#impDefScopeWrap").hidden = hasScope;
-  $("#impDefTypeWrap").hidden = hasType;
-  previewImport();
-}
-
-const IN_WORDS = /salaris|loon|inkomen|inkomst|omzet|toeslag|uitkering|kinderbijslag|pensioen|\baow\b|ontvang|opbrengst|verhuur|dividend|bijverdien|freelance|opdracht|teruggave|factur|nettoloon|zakgeld ontv/;
-const SEC_IN = /^(inkomsten|inkomen|ontvangsten|omzet|opbrengsten|baten)\b/;
-const SEC_OUT = /^(uitgaven|vaste lasten|vaste kosten|lasten|kosten|variabele (kosten|lasten|uitgaven)|huishoudelijke uitgaven|reserveringen|sparen)\b/;
-function buildLines(){
-  const m = imp.map, body = imp.rows.slice(imp.head + 1), head = imp.rows[imp.head] || [];
-  const defScope = $("#impDefScope").value, defType = $("#impDefType").value, defFreq = $("#impDefFreq").value;
-  const skipTot = $("#impSkipTot").checked, useMonths = $("#impMonths").checked && imp.months.length;
-  const get = (r, f) => m[f] >= 0 ? r[m[f]] : "";
-  // automatic hints from the sheet itself
-  const sn = imp.sheet.toLowerCase();
-  const sheetScope = /zak|bedrijf|onderneming|bv\b|vof/.test(sn) ? "zakelijk" : /priv|thuis|huishoud/.test(sn) ? "prive" : null;
-  const ht = (cellText(head[m.amt]) + " " + sn).toLowerCase();
-  const headFreq = /jaar|p\.?j\.?\b/.test(ht) ? "jaar" : /kwartaal/.test(ht) ? "kwartaal" : "maand";
-  const hasNeg = m.amt >= 0 && body.some(r => num(r[m.amt]) < 0);
-  let secType = null, secScope = null;
-  const lines = [];
-  for (const r of body){
-    const name = cellText(get(r, "name"));
-    const ln = name.toLowerCase();
-    if (skipTot && /^(sub)?tota(al|len)|^saldo|^som\b|^resultaat|^over\b|^tekort/.test(ln)) continue;
-    let amount, freq, type;
-    if (useMonths){
-      amount = imp.months.reduce((s, i) => s + num(r[i] ?? 0), 0) / 12;
-      freq = "maand";
-    } else {
-      amount = num(get(r, "amt"));
-      const f = norm(get(r, "freq"));
-      freq = f.startsWith("kw") ? "kwartaal" : (f.startsWith("ja") || f === "j" || f.startsWith("jr")) ? "jaar" : f.startsWith("ma") || f === "m" ? "maand" : (defFreq === "auto" ? headFreq : defFreq);
-    }
-    const out = m.amtOut >= 0 && !useMonths ? num(get(r, "amtOut")) : 0;
-    // section headings like "Inkomsten", "Vaste lasten", "Zakelijk" without an amount
-    if (!amount && !out && name){
-      if (SEC_IN.test(ln)) { secType = "in"; }
-      else if (SEC_OUT.test(ln)) { secType = "uit"; }
-      if (/^zakelijk|^bedrijf|^onderneming/.test(ln)) secScope = "zakelijk";
-      else if (/^priv/.test(ln)) secScope = "prive";
-      continue;
-    }
-    if (!amount && !out) continue;
-    if (out && !amount){ amount = out; type = "uit"; }
-    else if (m.amtOut >= 0 && !useMonths) type = "in";
-    if (!type){
-      const t = norm(get(r, "type"));
-      if (/^(in|omzet|ontv|bij|credit)/.test(t)) type = "in";
-      else if (/^(uit|af|kost|debet|deb)/.test(t)) type = "uit";
-      else if (defType === "in" || defType === "uit") type = defType;
-      else if (defType === "sign") type = amount < 0 ? "uit" : "in";
-      else if (secType) type = secType;
-      else if (hasNeg) type = amount < 0 ? "uit" : "in";
-      else type = IN_WORDS.test(ln + " " + cellText(get(r, "cat")).toLowerCase()) ? "in" : "uit";
-    }
-    amount = Math.round(Math.abs(amount) * 100) / 100;
-    const s = norm(get(r, "scope"));
-    const scope = /^(zak|bedr|bv|vof|eenmanszaak)/.test(s) ? "zakelijk" : /^(priv|thuis|huis)/.test(s) ? "prive"
-      : defScope !== "auto" ? defScope : secScope || sheetScope || (m.btw >= 0 && cellText(get(r, "btw")) !== "" ? "zakelijk" : "prive");
-    const rawBtw = cellText(get(r, "btw")).replace("%", "").trim();
-    let btw = 0;
-    if (scope === "zakelijk"){ const b = rawBtw === "" ? 21 : num(rawBtw); btw = Math.round(b > 0 && b < 1 ? b * 100 : b); if (![21,9,0].includes(btw)) btw = 21; }
-    lines.push({id:uid(), scope, type, name, cat:cellText(get(r, "cat")), amount, freq, btw, month:parseMonth(get(r, "mo")), note:cellText(get(r, "note"))});
-  }
-  return lines;
-}
 function previewImport(){
-  const ok = imp.map.name >= 0 || imp.map.amt >= 0 || imp.months.length;
-  const lines = ok ? buildLines() : [];
+  const v = $("#impSheet").value;
+  const lines = v === "*" ? imp.wb.SheetNames.flatMap(n => imp.found[n]) : (imp.found[v] || []);
   imp.lines = lines;
   const nIn = lines.filter(l => l.type === "in").length, nZ = lines.filter(l => l.scope === "zakelijk").length;
   $("#impCount").textContent = lines.length
-    ? `${lines.length} regels klaar om te importeren: ${nIn} inkomsten, ${lines.length - nIn} uitgaven, ${lines.length - nZ} privé, ${nZ} zakelijk.`
-    : "Op dit tabblad zijn geen bedragen gevonden. Kies een ander tabblad, of open hieronder \"Herkenning aanpassen\".";
+    ? `${lines.length} regels gevonden: ${nIn} inkomsten, ${lines.length - nIn} uitgaven${nZ ? `, waarvan ${nZ} zakelijk` : ""}. Na het importeren kun je alles nog aanpassen.`
+    : "Op dit tabblad staan geen bedragen. Kies een ander tabblad.";
   $("#impReplace").disabled = $("#impAppend").disabled = !lines.length;
-  $("#impPreview").innerHTML = lines.length ? `<thead><tr><th>Soort</th><th>Type</th><th>Omschrijving</th><th>Categorie</th><th class="r">Bedrag</th><th>Freq.</th><th class="r">BTW</th></tr></thead><tbody>` +
-    lines.slice(0, 12).map(l => `<tr><td>${SCOPE_OUT[l.scope]}</td><td>${TYPE_OUT[l.type]}</td><td>${esc(l.name) || "–"}</td><td>${esc(l.cat) || "–"}</td><td class="r">${eur2.format(l.amount)}</td><td>${l.freq}</td><td class="r">${l.scope === "zakelijk" ? l.btw + "%" : "–"}</td></tr>`).join("") +
-    (lines.length > 12 ? `<tr><td colspan="7" class="note">… en nog ${lines.length - 12} regels</td></tr>` : "") + `</tbody>` : "";
+  $("#impPreview").innerHTML = lines.length ? `<thead><tr><th>Omschrijving</th><th class="r">Bedrag</th><th></th><th>Type</th><th>Soort</th><th>Categorie</th></tr></thead><tbody>` +
+    lines.slice(0, 15).map(l => `<tr><td>${esc(l.name)}</td><td class="r">${eur2.format(l.amount)}</td><td class="note">per ${l.freq}</td><td>${TYPE_OUT[l.type]}</td><td>${SCOPE_OUT[l.scope]}${l.scope === "zakelijk" ? ` · ${l.btw}%` : ""}</td><td>${esc(l.cat) || "–"}</td></tr>`).join("") +
+    (lines.length > 15 ? `<tr><td colspan="6" class="note">… en nog ${lines.length - 15} regels</td></tr>` : "") + `</tbody>` : "";
 }
 function closeImporter(){ imp = null; $("#importer").hidden = true; }
 
@@ -1028,17 +1021,10 @@ $("#importFile").addEventListener("change", async e => {
     openImporter(wb, file.name);
   } catch(err){ closeImporter(); showMsg(`"${file.name}" kon niet worden gelezen. Kies een .xlsx-, .xls-, .numbers- of .csv-bestand. Is het bestand beveiligd met een wachtwoord, haal dat er dan eerst af.`, false); }
 });
-$("#impSheet").addEventListener("change", e => loadSheet(e.target.value));
-$("#impHead").addEventListener("change", e => loadSheet(imp.sheet, +e.target.value));
-$("#importer").addEventListener("change", e => {
-  if (!imp) return;
-  const f = e.target.dataset.map;
-  if (f){ imp.map[f] = +e.target.value; $("#impDefScopeWrap").hidden = imp.map.scope >= 0; $("#impDefTypeWrap").hidden = imp.map.type >= 0 || imp.map.amtOut >= 0; }
-  if (e.target.id !== "impSheet" && e.target.id !== "impHead") previewImport();
-});
+$("#impSheet").addEventListener("change", previewImport);
 function applyImport(replace){
   if (!imp || !imp.lines?.length) return;
-  const lines = imp.lines;
+  const lines = imp.lines.map(l => ({...l, id:uid()}));
   let settings = null;
   const sn = imp.wb.SheetNames.find(n => norm(n) === "instellingen");
   if (replace && sn){
