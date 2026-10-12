@@ -58,6 +58,17 @@ h1{font-family:var(--display);font-weight:700;font-size:1.6rem;letter-spacing:-.
 .tbtn input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .tbtn[hidden]{display:none!important}
 .banner.warn{background:var(--btw-soft)}
+.importer{margin-top:16px;border-color:var(--accent)}
+.imp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px}
+.imp-grid .field select,#importer .field select{font:inherit;font-size:.9rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;min-width:0}
+.imp-grid .field[hidden]{display:none!important}
+.check{display:flex;gap:8px;align-items:flex-start;font-size:.9rem;cursor:pointer}
+.check input{margin-top:3px;accent-color:var(--accent)}
+.imp-count{margin:0;font-weight:600}
+table.preview{font-size:.85rem}
+table.preview td{padding:6px;white-space:nowrap}
+.imp-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.btn:disabled{opacity:.4;cursor:not-allowed}
 @media (max-width:640px){
   .brand .tools{width:100%}
   .brand .tools .status{flex-basis:100%}
@@ -205,7 +216,7 @@ input[type=range]{width:100%;accent-color:var(--ib)}
       <h1>Begroting</h1>
       <div class="tools">
         <span class="status" id="status">Laden…</span>
-        <label class="tbtn" id="importBtn" for="importFile">Excel importeren<input type="file" id="importFile" accept=".xlsx,.xls,.csv"></label>
+        <label class="tbtn" id="importBtn" for="importFile">Excel importeren<input type="file" id="importFile" accept=".xlsx,.xls,.xlsm,.csv,.numbers,.ods,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></label>
         <button class="tbtn" id="exportBtn">Excel exporteren</button>
       </div>
     </div>
@@ -227,11 +238,38 @@ input[type=range]{width:100%;accent-color:var(--ib)}
 
   <div class="banner warn" id="importBar" hidden style="margin-top:16px">
     <span id="importMsg"></span>
-    <span style="display:flex;gap:8px;flex-wrap:wrap" id="importActions">
+    <span id="importActions" hidden></span>
+  </div>
+
+  <div class="card stack importer" id="importer" hidden>
+    <div>
+      <h2>Importeren uit <span id="impFile"></span></h2>
+      <p class="lede">Kies het tabblad en controleer welke kolom wat betekent. Onderaan zie je wat er geïmporteerd wordt.</p>
+    </div>
+    <div class="imp-grid">
+      <label class="field" for="impSheet">Tabblad<select id="impSheet"></select></label>
+      <label class="field" for="impHead">Rij met kolomnamen<select id="impHead"></select></label>
+    </div>
+    <h3>Kolommen koppelen</h3>
+    <div class="imp-grid" id="impMap"></div>
+    <div id="impMonthWrap" hidden>
+      <label class="check" for="impMonths"><input type="checkbox" id="impMonths"> Bedragen per maand staan in aparte kolommen: gebruik het gemiddelde per maand</label>
+      <p class="note" id="impMonthNote"></p>
+    </div>
+    <h3>Als het bestand dit niet vermeldt</h3>
+    <div class="imp-grid">
+      <label class="field" for="impDefScope" id="impDefScopeWrap">Privé of zakelijk<select id="impDefScope"><option value="prive">Alles privé</option><option value="zakelijk">Alles zakelijk</option></select></label>
+      <label class="field" for="impDefType" id="impDefTypeWrap">Inkomsten of uitgaven<select id="impDefType"><option value="uit">Alles uitgaven</option><option value="in">Alles inkomsten</option><option value="sign">Negatief bedrag = uitgave</option></select></label>
+      <label class="field" for="impDefFreq">Frequentie<select id="impDefFreq"><option value="maand">Per maand</option><option value="kwartaal">Per kwartaal</option><option value="jaar">Per jaar</option></select></label>
+    </div>
+    <label class="check" for="impSkipTot"><input type="checkbox" id="impSkipTot" checked> Sla regels met totaal, subtotaal of saldo over</label>
+    <p id="impCount" class="imp-count"></p>
+    <div class="scroll"><table id="impPreview" class="preview"></table></div>
+    <div class="imp-actions">
       <button class="btn ghost" id="impCancel">Annuleren</button>
       <button class="btn ghost" id="impAppend">Toevoegen aan begroting</button>
       <button class="btn" id="impReplace">Begroting vervangen</button>
-    </span>
+    </div>
   </div>
 
   <div class="banner" id="sampleBanner" hidden style="margin-top:16px">
@@ -790,6 +828,27 @@ async function exportXlsx(){
   }
 }
 
+/* ---------- import wizard: read file, choose sheet, map columns, preview ---------- */
+const FIELDS = [
+  ["name","Omschrijving",true],["amt","Bedrag",true],["amtOut","Bedrag uitgaven (aparte kolom)",false],
+  ["cat","Categorie",false],["scope","Privé / zakelijk",false],["type","Inkomsten / uitgaven",false],
+  ["freq","Frequentie",false],["btw","BTW %",false],["mo","Betaalmaand",false],["note","Opmerking",false],
+];
+const GUESS = {
+  name:["omschrijving","naam","post","item","beschrijving","description","onderwerp","titel","rubriek"],
+  amt:["bedrag","amount","maandbedrag","bedragpermaand","permaand","inkomsten","bij","totaal","prijs","waarde","euro","eur","kosten"],
+  amtOut:["uitgaven","af","uit"],
+  cat:["categorie","category","groep","rubriek"],
+  scope:["soort","scope","privezakelijk","priveofzakelijk"],
+  type:["type","inuit","inkomstenuitgaven","bijaf","afbij"],
+  freq:["frequentie","periode","interval","termijn"],
+  btw:["btw%","btw","btwtarief","vat"],
+  mo:["betaalmaand","maand"],
+  note:["opmerking","opmerkingen","notitie","notities","toelichting","commentaar","memo"],
+};
+const MONTH_KEYS = MONTHS_LONG.map(m => m.slice(0,3)).concat(["mrt"]);
+let imp = null, pending = null;
+
 function parseMonth(v){
   const n = Math.round(num(v)); if (n >= 1 && n <= 12) return n;
   const s = norm(v).slice(0,3); if (!s) return 1;
@@ -798,69 +857,179 @@ function parseMonth(v){
   if (i < 0) i = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(s);
   return i >= 0 ? i + 1 : 1;
 }
-let pending = null;
-function parseWorkbook(wb){
-  const sheetName = wb.SheetNames.find(n => norm(n)==="regels") || wb.SheetNames[0];
-  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {header:1, defval:"", raw:true});
-  const hi = aoa.findIndex(r => r.some(c => norm(c)==="omschrijving" || norm(c)==="bedrag"));
-  if (hi < 0) return {lines:[], settings:null};
-  const h = aoa[hi].map(norm);
-  const col = (...keys) => h.findIndex(x => keys.includes(x));
-  const C = {scope:col("soort","scope"), type:col("type"), name:col("omschrijving","naam","post"), cat:col("categorie"), amt:col("bedrag"), freq:col("frequentie","periode"), btw:col("btw%","btw","btwtarief"), mo:col("betaalmaand","maand"), note:col("opmerking","opmerkingen","notitie","toelichting","commentaar")};
-  const lines = [];
-  for (const r of aoa.slice(hi+1)){
-    const name = C.name>=0 ? String(r[C.name]).trim() : "";
-    const amount = C.amt>=0 ? num(r[C.amt]) : 0;
-    if (!name && !amount) continue;
-    const sc = norm(r[C.scope]).startsWith("zak") ? "zakelijk" : "prive";
-    const t = norm(r[C.type]);
-    const type = /^(in|omzet|ontv)/.test(t) ? "in" : "uit";
-    const f = norm(r[C.freq]);
-    const freq = f.startsWith("kw") ? "kwartaal" : (f.startsWith("ja") || f.startsWith("j")) ? "jaar" : "maand";
-    const rawBtw = C.btw>=0 ? String(r[C.btw]).replace("%","").trim() : "";
-    let btw = 0;
-    if (sc==="zakelijk"){ const b = rawBtw==="" ? 21 : num(rawBtw); btw = Math.round(b > 0 && b < 1 ? b*100 : b); }
-    if (![21,9,0].includes(btw)) btw = 21;
-    lines.push({id:uid(), scope:sc, type, name, cat:C.cat>=0 ? String(r[C.cat]).trim() : "", amount, freq, btw, month:parseMonth(C.mo>=0 ? r[C.mo] : ""), note:C.note>=0 ? String(r[C.note]).trim() : ""});
-  }
-  let settings = null;
-  const sn = wb.SheetNames.find(n => norm(n)==="instellingen");
-  if (sn){
-    settings = {};
-    for (const [k,v] of XLSX.utils.sheet_to_json(wb.Sheets[sn], {header:1, defval:""})){
-      const nk = norm(k);
-      if (nk==="belasting%") settings.ibPct = Math.max(0, Math.min(50, Math.round(num(v))));
-      if (nk==="apartgezetbtw") settings.btwApart = num(v);
-      if (nk==="apartgezetbelasting") settings.ibApart = num(v);
-    }
-  }
-  return {lines, settings};
+const cellText = v => v instanceof Date ? v.toLocaleDateString("nl-NL") : String(v ?? "").trim();
+const colLetter = i => XLSX.utils.encode_col(i);
+
+function sheetRows(name){
+  const ws = imp.wb.Sheets[name];
+  if (!ws || !ws["!ref"]) return [];
+  return XLSX.utils.sheet_to_json(ws, {header:1, defval:"", raw:true, blankrows:false});
 }
+function detectHeader(rows){
+  const known = Object.values(GUESS).flat();
+  for (let i = 0; i < Math.min(rows.length, 20); i++){
+    const cells = rows[i].map(norm).filter(Boolean);
+    if (cells.filter(c => known.includes(c)).length >= 1 && rows[i].filter(c => typeof c === "string" && c.trim()).length >= 2) return i;
+  }
+  const i = rows.findIndex(r => r.filter(c => typeof c === "string" && c.trim()).length >= 2);
+  return i < 0 ? 0 : i;
+}
+function guessMap(head, rows){
+  const h = head.map(norm), used = new Set(), map = {};
+  for (const [f] of FIELDS){
+    let idx = -1;
+    for (const k of GUESS[f]){ idx = h.findIndex((x, i) => x === k && !used.has(i)); if (idx >= 0) break; }
+    if (idx < 0) for (const k of GUESS[f]){ if (k.length < 4) continue; idx = h.findIndex((x, i) => x.includes(k) && !used.has(i)); if (idx >= 0) break; }
+    if (idx >= 0){ map[f] = idx; used.add(idx); } else map[f] = -1;
+  }
+  // amtOut only makes sense next to a separate income column
+  if (map.amtOut >= 0 && map.amt < 0){ map.amt = map.amtOut; map.amtOut = -1; }
+  if (map.amtOut >= 0 && !/^(inkomsten|bij|in)$/.test(h[map.amt] || "")){ used.delete(map.amtOut); map.amtOut = -1; }
+  // fallbacks: first text column for name, first mostly-numeric column for amount
+  const body = rows.slice(0, 30);
+  if (map.name < 0){ const i = head.findIndex((_, c) => !used.has(c) && body.filter(r => typeof r[c] === "string" && r[c].trim()).length >= body.length / 2); if (i >= 0){ map.name = i; used.add(i); } }
+  if (map.amt < 0){ const i = head.findIndex((_, c) => !used.has(c) && body.filter(r => typeof r[c] === "number").length >= Math.max(1, body.length / 3)); if (i >= 0){ map.amt = i; used.add(i); } }
+  return map;
+}
+function monthCols(head){
+  const out = [];
+  head.forEach((c, i) => { const s = norm(c).slice(0,3); if (MONTH_KEYS.includes(s) && norm(c).length <= 9) out.push(i); });
+  return out.length >= 3 ? out : [];
+}
+
+function openImporter(wb, fileName){
+  imp = {wb, fileName};
+  $("#impFile").textContent = fileName;
+  const pref = wb.SheetNames.find(n => norm(n) === "regels") || wb.SheetNames.find(n => sheetRows(n).length > 1) || wb.SheetNames[0];
+  $("#impSheet").innerHTML = wb.SheetNames.map(n => { const c = sheetRows(n).length; return `<option value="${esc(n)}" ${n===pref?"selected":""}>${esc(n)} (${c} ${c===1?"rij":"rijen"})</option>`; }).join("");
+  $("#importBar").hidden = true;
+  $("#importer").hidden = false;
+  loadSheet(pref);
+  $("#importer").scrollIntoView({block:"start", behavior:"smooth"});
+}
+function loadSheet(name, headerRow){
+  imp.sheet = name;
+  imp.rows = sheetRows(name);
+  imp.head = headerRow ?? detectHeader(imp.rows);
+  $("#impHead").innerHTML = imp.rows.slice(0, 25).map((r, i) => `<option value="${i}" ${i===imp.head?"selected":""}>Rij ${i+1}: ${esc(r.map(cellText).filter(Boolean).slice(0,4).join(" · ").slice(0,60)) || "(leeg)"}</option>`).join("") || `<option value="0">Geen gegevens op dit tabblad</option>`;
+  const head = imp.rows[imp.head] || [];
+  const body = imp.rows.slice(imp.head + 1);
+  imp.map = guessMap(head, body);
+  imp.months = monthCols(head);
+  if (imp.months.includes(imp.map.amt)) imp.map.amt = -1;
+  $("#impMonthWrap").hidden = !imp.months.length;
+  $("#impMonths").checked = imp.months.length > 0 && imp.map.amt < 0;
+  $("#impMonthNote").textContent = imp.months.length ? `${imp.months.length} maandkolommen gevonden (${imp.months.map(i => cellText(head[i])).join(", ")}).` : "";
+  const width = Math.max(head.length, ...body.slice(0, 50).map(r => r.length), 0);
+  const opts = ['<option value="-1">— niet gebruiken —</option>'].concat(Array.from({length:width}, (_, i) => `<option value="${i}">${colLetter(i)}: ${esc(cellText(head[i]) || "(geen naam)")}</option>`)).join("");
+  $("#impMap").innerHTML = FIELDS.map(([f, label, req]) => `<label class="field" for="map-${f}">${label}${req ? " *" : ""}<select id="map-${f}" data-map="${f}">${opts}</select></label>`).join("");
+  for (const [f] of FIELDS) $("#map-" + f).value = imp.map[f];
+  const hasScope = imp.map.scope >= 0, hasType = imp.map.type >= 0 || imp.map.amtOut >= 0;
+  $("#impDefScopeWrap").hidden = hasScope;
+  $("#impDefTypeWrap").hidden = hasType;
+  if (!hasType){
+    const neg = body.some(r => typeof r[imp.map.amt] === "number" && r[imp.map.amt] < 0);
+    $("#impDefType").value = neg ? "sign" : "uit";
+  }
+  previewImport();
+}
+
+function buildLines(){
+  const m = imp.map, body = imp.rows.slice(imp.head + 1);
+  const defScope = $("#impDefScope").value, defType = $("#impDefType").value, defFreq = $("#impDefFreq").value;
+  const skipTot = $("#impSkipTot").checked, useMonths = $("#impMonths").checked && imp.months.length;
+  const get = (r, f) => m[f] >= 0 ? r[m[f]] : "";
+  const lines = [];
+  for (const r of body){
+    const name = cellText(get(r, "name"));
+    if (skipTot && /^(sub)?tota(al|len)|^saldo|^som\b/i.test(name)) continue;
+    let amount, freq, type;
+    if (useMonths){
+      amount = imp.months.reduce((s, i) => s + num(r[i] ?? 0), 0) / 12;
+      freq = "maand";
+    } else {
+      amount = num(get(r, "amt"));
+      const f = norm(get(r, "freq"));
+      freq = f.startsWith("kw") ? "kwartaal" : (f.startsWith("ja") || f === "j" || f.startsWith("jr")) ? "jaar" : f.startsWith("ma") || f === "m" ? "maand" : defFreq;
+    }
+    const out = m.amtOut >= 0 && !useMonths ? num(get(r, "amtOut")) : 0;
+    if (out && !amount){ amount = out; type = "uit"; }
+    else if (m.amtOut >= 0 && !useMonths) type = "in";
+    if (!name && !amount) continue;
+    if (!type){
+      const t = norm(get(r, "type"));
+      if (/^(in|omzet|ontv|bij|credit)/.test(t)) type = "in";
+      else if (/^(uit|af|kost|debet|deb)/.test(t)) type = "uit";
+      else type = defType === "sign" ? (amount < 0 ? "uit" : "in") : (m.type >= 0 && defType === "sign" ? "uit" : defType);
+    }
+    amount = Math.round(Math.abs(amount) * 100) / 100;
+    const s = norm(get(r, "scope"));
+    const scope = /^(zak|bedr|bv|vof|eenmanszaak)/.test(s) ? "zakelijk" : /^(priv|thuis|huis)/.test(s) ? "prive" : defScope;
+    const rawBtw = cellText(get(r, "btw")).replace("%", "").trim();
+    let btw = 0;
+    if (scope === "zakelijk"){ const b = rawBtw === "" ? 21 : num(rawBtw); btw = Math.round(b > 0 && b < 1 ? b * 100 : b); if (![21,9,0].includes(btw)) btw = 21; }
+    lines.push({id:uid(), scope, type, name, cat:cellText(get(r, "cat")), amount, freq, btw, month:parseMonth(get(r, "mo")), note:cellText(get(r, "note"))});
+  }
+  return lines;
+}
+function previewImport(){
+  const ok = imp.map.name >= 0 || imp.map.amt >= 0 || imp.months.length;
+  const lines = ok ? buildLines() : [];
+  imp.lines = lines;
+  const nIn = lines.filter(l => l.type === "in").length, nZ = lines.filter(l => l.scope === "zakelijk").length;
+  $("#impCount").textContent = lines.length
+    ? `${lines.length} regels klaar om te importeren: ${nIn} inkomsten, ${lines.length - nIn} uitgaven, ${lines.length - nZ} privé, ${nZ} zakelijk.`
+    : "Nog geen regels gevonden. Kies het juiste tabblad, de rij met kolomnamen en koppel minstens Omschrijving en Bedrag.";
+  $("#impReplace").disabled = $("#impAppend").disabled = !lines.length;
+  $("#impPreview").innerHTML = lines.length ? `<thead><tr><th>Soort</th><th>Type</th><th>Omschrijving</th><th>Categorie</th><th class="r">Bedrag</th><th>Freq.</th><th class="r">BTW</th></tr></thead><tbody>` +
+    lines.slice(0, 12).map(l => `<tr><td>${SCOPE_OUT[l.scope]}</td><td>${TYPE_OUT[l.type]}</td><td>${esc(l.name) || "–"}</td><td>${esc(l.cat) || "–"}</td><td class="r">${eur2.format(l.amount)}</td><td>${l.freq}</td><td class="r">${l.scope === "zakelijk" ? l.btw + "%" : "–"}</td></tr>`).join("") +
+    (lines.length > 12 ? `<tr><td colspan="7" class="note">… en nog ${lines.length - 12} regels</td></tr>` : "") + `</tbody>` : "";
+}
+function closeImporter(){ imp = null; $("#importer").hidden = true; }
+
 $("#importFile").addEventListener("change", async e => {
   const file = e.target.files[0]; e.target.value = "";
   if (!file) return;
-  if (!window.XLSX){ showMsg("Excel-ondersteuning kon niet laden. Herlaad de pagina en probeer opnieuw.", false); return; }
+  if (!window.XLSX){ showMsg("Excel-ondersteuning kon niet laden. Open de app één keer met internet en probeer het opnieuw.", false); return; }
   try {
-    const wb = XLSX.read(await file.arrayBuffer(), {type:"array"});
-    pending = parseWorkbook(wb);
-    if (!pending.lines.length){ pending = null; showMsg(`Geen regels gevonden in "${file.name}". Zorg voor kolommen Soort, Type, Omschrijving, Categorie, Bedrag, Frequentie en BTW %. Exporteer eerst een keer om het juiste formaat te zien.`, false); return; }
-    const p = pending.lines.filter(l=>l.scope==="prive").length;
-    showMsg(`${pending.lines.length} regels gevonden in "${file.name}" (${p} privé, ${pending.lines.length-p} zakelijk). Wat wil je ermee doen?`, true);
-  } catch(err){ pending = null; showMsg(`"${file.name}" kon niet worden gelezen. Kies een .xlsx-, .xls- of .csv-bestand.`, false); }
+    const wb = XLSX.read(await file.arrayBuffer(), {type:"array", cellDates:true});
+    if (!wb.SheetNames.length) throw new Error("leeg");
+    openImporter(wb, file.name);
+  } catch(err){ closeImporter(); showMsg(`"${file.name}" kon niet worden gelezen. Kies een .xlsx-, .xls-, .numbers- of .csv-bestand. Is het bestand beveiligd met een wachtwoord, haal dat er dan eerst af.`, false); }
+});
+$("#impSheet").addEventListener("change", e => loadSheet(e.target.value));
+$("#impHead").addEventListener("change", e => loadSheet(imp.sheet, +e.target.value));
+$("#importer").addEventListener("change", e => {
+  if (!imp) return;
+  const f = e.target.dataset.map;
+  if (f){ imp.map[f] = +e.target.value; $("#impDefScopeWrap").hidden = imp.map.scope >= 0; $("#impDefTypeWrap").hidden = imp.map.type >= 0 || imp.map.amtOut >= 0; }
+  if (e.target.id !== "impSheet" && e.target.id !== "impHead") previewImport();
 });
 function applyImport(replace){
-  if (!pending) return;
-  S.lines = replace ? pending.lines : S.lines.concat(pending.lines);
-  if (replace && pending.settings) Object.assign(S.settings, pending.settings);
+  if (!imp || !imp.lines?.length) return;
+  const lines = imp.lines;
+  let settings = null;
+  const sn = imp.wb.SheetNames.find(n => norm(n) === "instellingen");
+  if (replace && sn){
+    settings = {};
+    for (const [k, v] of XLSX.utils.sheet_to_json(imp.wb.Sheets[sn], {header:1, defval:""})){
+      const nk = norm(k);
+      if (nk === "belasting%") settings.ibPct = Math.max(0, Math.min(50, Math.round(num(v))));
+      if (nk === "apartgezetbtw") settings.btwApart = num(v);
+      if (nk === "apartgezetbelasting") settings.ibApart = num(v);
+    }
+  }
+  S.lines = replace ? lines : S.lines.concat(lines);
+  if (settings) Object.assign(S.settings, settings);
   S.sample = false;
-  const n = pending.lines.length; pending = null;
+  closeImporter();
   hydrate(); save();
-  showMsg(`${n} regels ${replace ? "geïmporteerd" : "toegevoegd"}.`, false);
-  setTimeout(() => { if (!pending) $("#importBar").hidden = true; }, 4000);
+  showMsg(`${lines.length} regels ${replace ? "geïmporteerd" : "toegevoegd"}.`, false);
+  setTimeout(() => { if (!imp) $("#importBar").hidden = true; }, 4000);
 }
 $("#impReplace").addEventListener("click", () => applyImport(true));
 $("#impAppend").addEventListener("click", () => applyImport(false));
-$("#impCancel").addEventListener("click", () => { pending = null; $("#importBar").hidden = true; });
+$("#impCancel").addEventListener("click", closeImporter);
 $("#exportBtn").addEventListener("click", exportXlsx);
 
 setTab(tab); syncPeriod(); hydrate();
