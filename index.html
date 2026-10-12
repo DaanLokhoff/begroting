@@ -59,6 +59,9 @@ h1{font-family:var(--display);font-weight:700;font-size:1.6rem;letter-spacing:-.
 .tbtn[hidden]{display:none!important}
 .banner.warn{background:var(--btw-soft)}
 @media (max-width:640px){
+  .brand .tools{width:100%}
+  .brand .tools .status{flex-basis:100%}
+  .tbtn{flex:1;white-space:nowrap;text-align:center}
   header.top{position:static}h1{font-size:1.4rem}
   table.rows,table.rows tbody{display:block}
   table.rows thead{display:none}
@@ -202,8 +205,8 @@ input[type=range]{width:100%;accent-color:var(--ib)}
       <h1>Begroting</h1>
       <div class="tools">
         <span class="status" id="status">Laden…</span>
-        <label class="tbtn" id="importBtn" for="importFile">Importeren uit Excel<input type="file" id="importFile" accept=".xlsx,.xls,.csv"></label>
-        <button class="tbtn" id="exportBtn">Exporteren naar Excel</button>
+        <label class="tbtn" id="importBtn" for="importFile">Excel importeren<input type="file" id="importFile" accept=".xlsx,.xls,.csv"></label>
+        <button class="tbtn" id="exportBtn">Excel exporteren</button>
       </div>
     </div>
     <div class="controls">

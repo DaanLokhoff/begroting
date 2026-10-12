@@ -1,5 +1,5 @@
 // Service worker: bewaart de app en de bibliotheken lokaal, zodat Begroting offline werkt.
-const CACHE = "begroting-20261012234926";
+const CACHE = "begroting-20261013000234";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png",
   "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"];
 
