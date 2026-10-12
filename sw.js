@@ -1,5 +1,5 @@
 // Service worker: bewaart de app en de bibliotheken lokaal, zodat Begroting offline werkt.
-const CACHE = "begroting-20261013000234";
+const CACHE = "begroting-20261013000342";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png",
   "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"];
 
@@ -16,8 +16,11 @@ self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   // De pagina zelf: eerst netwerk (voor updates), anders de bewaarde versie.
   if (e.request.mode === "navigate") {
-    e.respondWith(fetch(e.request).then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put("index.html", copy)); return r; })
-      .catch(() => caches.match("index.html")));
+    // Een foutpagina (bijv. 404) overschrijft nooit de bewaarde app.
+    e.respondWith(fetch(e.request).then(r => {
+      if (!r.ok) return caches.match("index.html").then(hit => hit || r);
+      const copy = r.clone(); caches.open(CACHE).then(c => c.put("index.html", copy)); return r;
+    }).catch(() => caches.match("index.html")));
     return;
   }
   // Al het andere (icoontjes, Excel-bibliotheek, lettertypen): eerst cache.
