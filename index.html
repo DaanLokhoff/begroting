@@ -842,8 +842,9 @@ const isKw = s => KW_SCOPE.test(s) || KW_TYPE.test(s) || KW_FREQ.test(s) || mont
 const IN_WORDS = /salaris|loon|inkomen|inkomst|omzet|toeslag|uitkering|kinderbijslag|pensioen|\baow\b|ontvang|opbrengst|verhuur|dividend|bijverdien|freelance|opdracht|teruggave|factur/;
 const SEC_IN = /^(inkomsten|inkomen|ontvangsten|omzet|opbrengsten|baten)\b/;
 const SEC_OUT = /^(uitgaven|vaste lasten|vaste kosten|lasten|kosten|variabele (kosten|lasten|uitgaven)|huishoudelijke uitgaven|reserveringen|sparen)\b/;
-const TOTAL = /^(sub)?tota(al|len)|^saldo|^som\b|^resultaat|^over\b|^tekort|^netto (resultaat|over)/;
-const typeOfText = s => /inkomst|inkomen|ontvang|\bbij\b|omzet|credit|opbrengst/.test(s) ? "in" : /uitgave|kosten|lasten|\baf\b|debet|betaald/.test(s) ? "uit" : null;
+const TOTAL = /^(sub)?tota(al|len)|^saldo|^som\b|^resultaat|^over\b|^tekort|^netto (resultaat|over)|^te besteden|^beschikbaar|^verschil/;
+const typeOfText = s => /^in$|^bij$|inkomst|inkomen|ontvang|omzet|credit|opbrengst/.test(s) ? "in" : /^uit$|^af$|uitgave|kosten|lasten|debet|betaald/.test(s) ? "uit" : null;
+const NO_BTW = /salaris|loon|belasting|verzekering|\baow\b|uitkering|hypotheek|sparen|rente|boete|privé|prive|opname|lening|aflossing|pensioen/;
 const freqOfText = s => /kwartaal|\bkw\b/.test(s) ? "kwartaal" : /jaar|jaarlijks|\bjr\b|p\.?j\.?/.test(s) ? "jaar" : /maand|\bmnd\b|p\.?m\.?/.test(s) ? "maand" : null;
 
 function sheetRows(wb, name){
@@ -861,118 +862,147 @@ function scanGrid(g, sheetName){
   if (!H || !W) return [];
   const at = (r, c) => (g[r] || [])[c];
   const sn = sheetName.toLowerCase();
-  const sheetScope = /zak|bedrijf|onderneming|\bbv\b|vof/.test(sn) ? "zakelijk" : null;
+  const allText = g.flat().filter(isTextCell).join(" ").toLowerCase();
+  const sheetScope = /zak|bedrijf|onderneming|\bbv\b|vof/.test(sn) || /\bomzet\b|\bbtw\b|zakelijk|bedrijf|facturen/.test(allText) ? "zakelijk" : null;
   const sheetFreq = freqOfText(sn);
 
-  // per column: how many numbers / texts, how varied, header above first number
-  const numc = [], txtc = [], distinct = [], kwShare = [], heads = [];
+  // column statistics
+  const numc = [], txtc = [], distinct = [], kwShare = [];
   for (let c = 0; c < W; c++){
-    let n = 0, t = 0, kw = 0, first = -1; const set = new Set();
+    let n = 0, t = 0, kw = 0, hdrSkip = 0; const set = new Set();
     for (let r = 0; r < H; r++){
       const v = at(r, c);
-      if (isNumCell(v)){ n++; if (first < 0) first = r; }
-      else if (isTextCell(v)){ t++; const s = v.trim(); set.add(s.toLowerCase()); if (isKw(s)) kw++; }
+      if (isNumCell(v)) n++;
+      else if (isTextCell(v)){ t++; const s = v.trim(); set.add(s.toLowerCase()); if (isKw(s)) kw++; else if (t === 1) hdrSkip = 1; }
     }
-    let head = "";
-    for (let r = first - 1; first > 0 && r >= Math.max(0, first - 4); r--) if (isTextCell(at(r, c))){ head = at(r, c).trim(); break; }
-    numc[c] = n; txtc[c] = t; distinct[c] = set.size; kwShare[c] = t ? kw / t : 0; heads[c] = head.toLowerCase();
+    numc[c] = n; txtc[c] = t; distinct[c] = set.size; kwShare[c] = t - hdrSkip > 0 ? kw / (t - hdrSkip) : 0;
   }
   const minN = H > 6 ? 2 : 1;
   const colNums = c => g.map(r => r[c]).filter(isNumCell).map(cellNum);
-  const isBtwCol = c => /btw|vat|tarief|%/.test(heads[c]);
+  const anyHead = c => { for (let r = 0; r < H; r++) if (isTextCell(at(r, c))) return at(r, c).trim().toLowerCase(); return ""; };
+  const isBtwCol = c => /^(btw|vat|btw ?%|btw-?tarief|tarief)$/.test(anyHead(c));
   const isSkipCol = c => {
-    if (/^(nr\.?|nummer|no\.?|#|datum|dag|betaalmaand|rekening.*|iban|code)$/.test(heads[c])) return true;
+    if (/^(nr\.?|nummer|no\.?|#|datum|dag|betaalmaand|rekening.*|iban|code)$/.test(anyHead(c))) return true;
     const v = colNums(c);
+    if (v.length >= 2 && v.every((x, i) => Number.isInteger(x) && x >= 0 && x <= 60 && (i === 0 || x === v[i-1] + 1))) return true; // 1,2,3,4 numbering
     if (v.length && v.every(x => Number.isInteger(x) && x >= 1900 && x <= 2100)) return true;
-    if (/maand/.test(heads[c]) && v.every(x => Number.isInteger(x) && x >= 1 && x <= 12)) return true;
     return false;
   };
-  const amount = new Set(), btwCols = [];
-  for (let c = 0; c < W; c++){
-    if (numc[c] < minN) continue;
-    if (isBtwCol(c)) btwCols.push(c); else if (!isSkipCol(c)) amount.add(c);
+  const kwCols = [];
+  for (let c = 0; c < W; c++) if (txtc[c] >= 2 && kwShare[c] >= .6) kwCols.push(c);
+  // a header row with month names -> those columns are one monthly series
+  let monthCols = [];
+  for (let r = 0; r < Math.min(H, 30) && !monthCols.length; r++){
+    const mc = []; for (let c = 0; c < W; c++) if (isTextCell(at(r, c)) && monthIdx(at(r, c)) >= 0) mc.push(c);
+    if (mc.length >= 3) monthCols = mc;
   }
-  if (!amount.size) return [];
-
-  // split the sheet into blocks: [text columns] [amount columns] [trailing text]
-  const blocks = []; let cur = null;
+  const btwCols = [], amountCols = [];
   for (let c = 0; c < W; c++){
-    if (amount.has(c)){
-      if (!cur) cur = {pre:[], amts:[], post:[]};
-      else if (cur.amts.length && cur.post.some(t => kwShare[t] < .6)){
-        const moved = cur.post.filter(t => kwShare[t] < .6);
-        cur.post = cur.post.filter(t => kwShare[t] >= .6);
-        blocks.push(cur); cur = {pre:moved, amts:[], post:[]};
-      }
-      cur.amts.push(c);
-    } else if (txtc[c] >= minN){
-      if (!cur) cur = {pre:[], amts:[], post:[]};
-      (cur.amts.length ? cur.post : cur.pre).push(c);
+    if (numc[c] < minN || monthCols.includes(c)) continue;
+    if (isBtwCol(c)) btwCols.push(c);
+    else if (!isSkipCol(c)) amountCols.push(c);
+  }
+  // amount "units": a single column, or the whole month series
+  const units = amountCols.map(c => ({cols:[c], c}));
+  if (monthCols.length){
+    units.forEach(u => { if (/totaal|gemiddeld|cumul|jaar/.test(anyHead(u.c))) u.skip = true; });
+    units.push({cols:monthCols, c:monthCols[0], months:true});
+  }
+  const live = units.filter(u => !u.skip);
+  if (!live.length) return [];
+  // a year like "2026" in the title rows is not an amount
+  const isAmt = (r, c) => { const v = at(r, c); if (!isNumCell(v)) return false; const n = cellNum(v); if (n === 0) return false;
+    if (r < 5 && Number.isInteger(n) && n >= 1990 && n <= 2100 && (sn.includes(String(n)) || (g[r] || []).some(x => isTextCell(x) && x.trim().length > 30) || !(g[r] || []).some((x, i) => i !== c && isNumCell(x)))) return false;
+    return true; };
+  const rowsOf = u => { const rs = []; for (let r = 0; r < H; r++) if (u.cols.some(c => isAmt(r, c))) rs.push(r); return rs; };
+
+  // pair every amount unit with its description column (left or right, max 3 columns away)
+  const used = new Set(); // "r:c" cells already used as a description
+  const isLabelCell = (r, c) => isTextCell(at(r, c)) && !isKw(at(r, c).trim()) && !used.has(r + ":" + c) && !/^<-|^-+>/.test(at(r, c).trim()) && !TOTAL.test(at(r, c).trim().toLowerCase());
+  const headType = u => { const r0 = rowsOf(u)[0]; if (r0 === undefined) return null;
+    for (let r = r0 - 1; r >= Math.max(0, r0 - 4); r--){ const v = at(r, u.c); if (isTextCell(v)) return typeOfText(v.trim().toLowerCase()); }
+    return null; };
+  const claimed = new Set(); // columns already chosen as description column of another amount column
+  const cand = u => {
+    const rs = rowsOf(u), lo = Math.min(...u.cols), hi = Math.max(...u.cols), out = [];
+    for (let c = Math.max(0, lo - 3); c <= Math.min(W - 1, hi + 3); c++){
+      if (u.cols.includes(c) || kwCols.includes(c) || amountCols.includes(c) && numc[c] > txtc[c]) continue;
+      const hit = rs.filter(r => isLabelCell(r, c));
+      if (hit.length < (headType(u) ? 1 : Math.min(2, rs.length))) continue;
+      const vals = new Set(hit.map(r => at(r, c).trim().toLowerCase()));
+      let h = ""; for (let r = hit[0] - 1; r >= Math.max(0, hit[0] - 4); r--) if (isTextCell(at(r, c))){ h = at(r, c).trim().toLowerCase(); break; }
+      const bonus = /omschrijving|naam|post|item|beschrijving/.test(h) ? 1 : /categ|groep|soort|rubriek/.test(h) ? -1 : 0;
+      out.push({c, score:hit.length - (claimed.has(c) ? 100 : 0), bonus, uniq:vals.size / hit.length, dist:c < lo ? lo - c : c - hi});
     }
+    return out.sort((a, b) => b.score - a.score || b.bonus - a.bonus || b.uniq - a.uniq || a.dist - b.dist);
+  };
+  const order = live.map(u => ({u, best:(cand(u)[0] || {score:0}).score})).sort((a, b) => b.best - a.best);
+  // first pass: decide every pairing and which description cells belong to it
+  const pairs = [], owner = new Map();
+  for (const {u} of order){
+    const pick = cand(u)[0];
+    if (!pick) continue;
+    const p = {u, label:pick.c, cands:cand(u)};
+    pairs.push(p); claimed.add(pick.c);
+    for (const r of rowsOf(u)) if (isLabelCell(r, pick.c)){ used.add(r + ":" + pick.c); owner.set(r + ":" + pick.c, p); }
   }
-  if (cur && cur.amts.length) blocks.push(cur);
-
+  const dist = (p, c) => Math.min(Math.abs(c - p.label), ...p.u.cols.map(x => Math.abs(c - x)));
+  const ownerOfCol = c => pairs.reduce((best, p) => !best || dist(p, c) < dist(best, c) ? p : best, null);
   const lines = [];
-  blocks.forEach((b, bi) => {
-    const textCols = b.pre.filter(c => kwShare[c] < .6).sort((x, y) => distinct[y] - distinct[x] || x - y);
-    const label = textCols[0] ?? b.pre[b.pre.length - 1];
-    if (label === undefined) return;
-    const cat = textCols.find(c => c !== label);
-    const kwCols = b.pre.concat(b.post).filter(c => kwShare[c] >= .6);
-    const note = b.post.find(c => kwShare[c] < .6);
-    const end = blocks[bi + 1] ? Math.min(...blocks[bi + 1].pre, ...blocks[bi + 1].amts) : W;
-    const btw = btwCols.find(c => c > label && c < end);
-    const months = b.amts.filter(c => monthIdx(heads[c]) >= 0);
-    const cls = b.amts.map(c => ({c, type:typeOfText(heads[c]), freq:freqOfText(heads[c]), total:/totaal|saldo|cumul|gemiddeld/.test(heads[c])}));
-    const hasIn = cls.some(x => x.type === "in"), hasOut = cls.some(x => x.type === "uit");
-    const mode = months.length >= 3 ? "months" : (hasIn && hasOut) ? "split" : "single";
-    const prim = cls.filter(x => !x.total && monthIdx(heads[x.c]) < 0)
-      .sort((x, y) => (y.freq === "maand") - (x.freq === "maand") || numc[y.c] - numc[x.c])[0] || cls[0];
-
+  for (const p of pairs){
+    const {u, label} = p, rs = rowsOf(u);
+    // header of the amount column: the text just above its first described row
+    const firstRow = rs.find(r => owner.get(r + ":" + label) === p) ?? rs[0];
+    let head = "";
+    for (let r = firstRow - 1; r >= Math.max(0, firstRow - 4); r--){ const v = at(r, u.c); if (isTextCell(v)){ head = v.trim().toLowerCase(); break; } }
+    const colType = typeOfText(head), colFreq = freqOfText(head) || sheetFreq;
+    // an extra text column with repeating values next to the description = category
+    const catCol = p.cands.map(x => x.c).find(c => c !== label && /categ|groep|rubriek/.test(anyHead(c)) || (c !== label && distinct[c] <= txtc[label] * 0.6 && distinct[c] >= 1 && Math.abs(c - label) <= 2 && txtc[c] >= 2));
+    const near = c => Math.abs(c - label) <= 3 || u.cols.some(x => Math.abs(c - x) <= 3);
+    const myKw = kwCols.filter(c => near(c) && ownerOfCol(c) === p), myBtw = btwCols.find(c => near(c) && ownerOfCol(c) === p);
+    const noteCols = [];
+    for (let c = 0; c < W; c++){
+      if (c === label || c === catCol || u.cols.includes(c) || kwCols.includes(c) || btwCols.includes(c)) continue;
+      if (Math.abs(c - label) <= 3 && txtc[c] >= 1 || /opmerk|notit|toelicht|comment|memo/.test(anyHead(c))) noteCols.push(c);
+    }
     let secType = null, secScope = null;
     for (let r = 0; r < H; r++){
-      let name = isTextCell(at(r, label)) ? at(r, label).trim() : "";
-      const ln = name.toLowerCase();
-      let amt = null, type = null, freq = null;
-      if (mode === "months"){
-        const vals = months.map(c => at(r, c)).filter(isNumCell).map(cellNum);
-        if (vals.length) amt = vals.reduce((s, x) => s + x, 0) / months.length;
-        freq = "maand";
-      } else if (mode === "split"){
-        const inC = cls.find(x => x.type === "in"), outC = cls.find(x => x.type === "uit");
-        const vi = isNumCell(at(r, inC.c)) ? cellNum(at(r, inC.c)) : 0, vo = isNumCell(at(r, outC.c)) ? cellNum(at(r, outC.c)) : 0;
-        if (vi){ amt = vi; type = "in"; freq = inC.freq; } else if (vo){ amt = vo; type = "uit"; freq = outC.freq; }
-      } else if (isNumCell(at(r, prim.c))){
-        amt = cellNum(at(r, prim.c)); type = prim.type; freq = prim.freq;
-      }
+      const raw = isTextCell(at(r, label)) ? at(r, label).trim() : "";
+      const ln = raw.toLowerCase();
+      const vals = u.cols.filter(c => isAmt(r, c)).map(c => cellNum(at(r, c)));
+      const amt = u.months ? vals.reduce((s, x) => s + x, 0) / u.cols.length : (vals[0] || 0);
       if (!amt){
-        if (name){
+        if (raw && !owner.has(r + ":" + label)){
           if (SEC_IN.test(ln)) secType = "in"; else if (SEC_OUT.test(ln)) secType = "uit";
           if (/^zakelijk|^bedrijf|^onderneming/.test(ln)) secScope = "zakelijk"; else if (/^priv/.test(ln)) secScope = "prive";
         }
         continue;
       }
-      if (!name && cat !== undefined && isTextCell(at(r, cat))) name = at(r, cat).trim();
-      if (!name || TOTAL.test(name.toLowerCase()) || monthIdx(name) >= 0) continue;
-      // keyword cells in this row: Privé/Zakelijk, Inkomsten/Uitgaven, maand/jaar, betaalmaand
+      if (!raw || owner.get(r + ":" + label) !== p || TOTAL.test(ln) || monthIdx(raw) >= 0) continue;
       let kScope = null, kType = null, kFreq = null, kMonth = null;
-      for (const c of kwCols){
+      for (const c of myKw){
         const s = cellText(at(r, c)); if (!s) continue;
         if (KW_SCOPE.test(s)) kScope = /^zak|^bedr/i.test(s) ? "zakelijk" : "prive";
         else if (KW_TYPE.test(s)) kType = /^(in|bij)/i.test(s) ? "in" : "uit";
         else if (KW_FREQ.test(s)) kFreq = freqOfText(s.toLowerCase());
         else if (monthIdx(s) >= 0) kMonth = monthIdx(s) + 1;
       }
-      type = kType || type || secType || (amt < 0 ? "uit" : null) || (IN_WORDS.test(ln + " " + cellText(cat !== undefined ? at(r, cat) : "").toLowerCase()) ? "in" : "uit");
-      freq = mode === "months" ? "maand" : (kFreq || freq || sheetFreq || "maand");
-      const btwRaw = btw !== undefined ? cellText(at(r, btw)).replace("%", "") : "";
+      const catText = catCol !== undefined ? cellText(at(r, catCol)) : "";
+      const notes = noteCols.filter(c => isTextCell(at(r, c)) && !used.has(r + ":" + c)).map(c => at(r, c).trim().replace(/^<-+\s*|^-+>\s*/, "")).filter(Boolean);
+      const type = kType || colType || secType || (amt < 0 ? "uit" : null) || (IN_WORDS.test(ln + " " + catText.toLowerCase()) ? "in" : "uit");
+      const freq = u.months ? "maand" : (kFreq || colFreq || "maand");
+      const btwRaw = myBtw !== undefined ? cellText(at(r, myBtw)).replace("%", "") : "";
       const scope = kScope || secScope || sheetScope || (btwRaw !== "" ? "zakelijk" : "prive");
       let btwPct = 0;
-      if (scope === "zakelijk"){ const v = btwRaw === "" ? 21 : num(btwRaw); btwPct = Math.round(v > 0 && v < 1 ? v * 100 : v); if (![21,9,0].includes(btwPct)) btwPct = 21; }
-      lines.push({id:uid(), scope, type, name, cat:cat !== undefined ? cellText(at(r, cat)) : "", amount:Math.round(Math.abs(amt) * 100) / 100, freq, btw:btwPct, month:kMonth || 1, note:note !== undefined ? cellText(at(r, note)) : ""});
+      if (scope === "zakelijk"){
+        const v = btwRaw === "" ? (NO_BTW.test(ln) ? 0 : 21) : num(btwRaw);
+        btwPct = Math.round(v > 0 && v < 1 ? v * 100 : v); if (![21,9,0].includes(btwPct)) btwPct = 21;
+      }
+      lines.push({id:uid(), scope, type, name:raw, cat:catText, amount:Math.round(Math.abs(amt) * 100) / 100, freq, btw:btwPct, month:kMonth || 1, note:notes.join(" · "), _r:r});
     }
-  });
-  return lines;
+  }
+  // keep sheet order: top to bottom, incomes first
+  return lines.sort((a, b) => (a.type === b.type ? 0 : a.type === "in" ? -1 : 1) || a._r - b._r).map(({_r, ...l}) => l);
 }
 function scanSheet(wb, name){
   const g = sheetRows(wb, name);
@@ -987,9 +1017,16 @@ function openImporter(wb, fileName){
   imp = {wb, fileName, found};
   $("#impFile").textContent = fileName;
   const own = wb.SheetNames.find(n => norm(n) === "regels" && found[n].length);
-  const best = own || withLines.reduce((a, n) => found[n].length > found[a].length ? n : a, withLines[0] || wb.SheetNames[0]);
-  const all = withLines.reduce((s, n) => s + found[n].length, 0);
-  $("#impSheet").innerHTML = (withLines.length > 1 && !own ? `<option value="*">Alle tabbladen (${all} regels)</option>` : "") +
+  // sheets named after years (2025_huis, 2026_bedrijf): offer the newest year as one choice
+  const yearOf = n => +((n.match(/(19|20)\d\d/) || [])[0] || 0);
+  const newest = Math.max(0, ...withLines.map(yearOf));
+  const yearSheets = newest ? withLines.filter(n => yearOf(n) === newest) : [];
+  imp.groups = {"*": withLines, ["y" + newest]: yearSheets};
+  const count = list => list.reduce((s, n) => s + found[n].length, 0);
+  const best = own || (yearSheets.length ? (yearSheets.length > 1 ? "y" + newest : yearSheets[0]) : withLines.reduce((a, n) => found[n].length > found[a].length ? n : a, withLines[0] || wb.SheetNames[0]));
+  $("#impSheet").innerHTML =
+    (yearSheets.length > 1 && !own ? `<option value="y${newest}" ${best === "y" + newest ? "selected" : ""}>Alles van ${newest}: ${yearSheets.join(" + ")} (${count(yearSheets)} regels)</option>` : "") +
+    (withLines.length > 1 && !own && withLines.length !== yearSheets.length ? `<option value="*">Alle tabbladen (${count(withLines)} regels)</option>` : "") +
     wb.SheetNames.map(n => `<option value="${esc(n)}" ${n === best ? "selected" : ""}>${esc(n)} (${found[n].length ? found[n].length + (found[n].length === 1 ? " regel" : " regels") : "niets gevonden"})</option>`).join("");
   $("#importBar").hidden = true;
   $("#importer").hidden = false;
@@ -998,7 +1035,7 @@ function openImporter(wb, fileName){
 }
 function previewImport(){
   const v = $("#impSheet").value;
-  const lines = v === "*" ? imp.wb.SheetNames.flatMap(n => imp.found[n]) : (imp.found[v] || []);
+  const lines = imp.groups[v] ? imp.groups[v].flatMap(n => imp.found[n]) : (imp.found[v] || []);
   imp.lines = lines;
   const nIn = lines.filter(l => l.type === "in").length, nZ = lines.filter(l => l.scope === "zakelijk").length;
   $("#impCount").textContent = lines.length
