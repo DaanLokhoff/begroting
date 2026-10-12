@@ -59,6 +59,8 @@ h1{font-family:var(--display);font-weight:700;font-size:1.6rem;letter-spacing:-.
 .tbtn[hidden]{display:none!important}
 .banner.warn{background:var(--btw-soft)}
 .importer{margin-top:16px;border-color:var(--accent)}
+.imp-sheet{max-width:420px}
+.imp-adv summary{margin-top:4px}
 .imp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px}
 .imp-grid .field select,#importer .field select{font:inherit;font-size:.9rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;min-width:0}
 .imp-grid .field[hidden]{display:none!important}
@@ -244,25 +246,9 @@ input[type=range]{width:100%;accent-color:var(--ib)}
   <div class="card stack importer" id="importer" hidden>
     <div>
       <h2>Importeren uit <span id="impFile"></span></h2>
-      <p class="lede">Kies het tabblad en controleer welke kolom wat betekent. Onderaan zie je wat er geïmporteerd wordt.</p>
+      <p class="lede">Kies het tabblad. De app leest zelf uit wat erin staat.</p>
     </div>
-    <div class="imp-grid">
-      <label class="field" for="impSheet">Tabblad<select id="impSheet"></select></label>
-      <label class="field" for="impHead">Rij met kolomnamen<select id="impHead"></select></label>
-    </div>
-    <h3>Kolommen koppelen</h3>
-    <div class="imp-grid" id="impMap"></div>
-    <div id="impMonthWrap" hidden>
-      <label class="check" for="impMonths"><input type="checkbox" id="impMonths"> Bedragen per maand staan in aparte kolommen: gebruik het gemiddelde per maand</label>
-      <p class="note" id="impMonthNote"></p>
-    </div>
-    <h3>Als het bestand dit niet vermeldt</h3>
-    <div class="imp-grid">
-      <label class="field" for="impDefScope" id="impDefScopeWrap">Privé of zakelijk<select id="impDefScope"><option value="prive">Alles privé</option><option value="zakelijk">Alles zakelijk</option></select></label>
-      <label class="field" for="impDefType" id="impDefTypeWrap">Inkomsten of uitgaven<select id="impDefType"><option value="uit">Alles uitgaven</option><option value="in">Alles inkomsten</option><option value="sign">Negatief bedrag = uitgave</option></select></label>
-      <label class="field" for="impDefFreq">Frequentie<select id="impDefFreq"><option value="maand">Per maand</option><option value="kwartaal">Per kwartaal</option><option value="jaar">Per jaar</option></select></label>
-    </div>
-    <label class="check" for="impSkipTot"><input type="checkbox" id="impSkipTot" checked> Sla regels met totaal, subtotaal of saldo over</label>
+    <label class="field imp-sheet" for="impSheet">Tabblad<select id="impSheet"></select></label>
     <p id="impCount" class="imp-count"></p>
     <div class="scroll"><table id="impPreview" class="preview"></table></div>
     <div class="imp-actions">
@@ -270,6 +256,25 @@ input[type=range]{width:100%;accent-color:var(--ib)}
       <button class="btn ghost" id="impAppend">Toevoegen aan begroting</button>
       <button class="btn" id="impReplace">Begroting vervangen</button>
     </div>
+    <details class="imp-adv">
+      <summary>Klopt het niet? Herkenning aanpassen</summary>
+      <div class="stack" style="margin-top:12px">
+        <label class="field" for="impHead">Rij met kolomnamen<select id="impHead"></select></label>
+        <h3>Kolommen</h3>
+        <div class="imp-grid" id="impMap"></div>
+        <div id="impMonthWrap" hidden>
+          <label class="check" for="impMonths"><input type="checkbox" id="impMonths"> Bedragen per maand staan in aparte kolommen: gebruik het gemiddelde per maand</label>
+          <p class="note" id="impMonthNote"></p>
+        </div>
+        <h3>Als het bestand dit niet vermeldt</h3>
+        <div class="imp-grid">
+          <label class="field" for="impDefScope" id="impDefScopeWrap">Privé of zakelijk<select id="impDefScope"><option value="auto">Automatisch</option><option value="prive">Alles privé</option><option value="zakelijk">Alles zakelijk</option></select></label>
+          <label class="field" for="impDefType" id="impDefTypeWrap">Inkomsten of uitgaven<select id="impDefType"><option value="auto">Automatisch</option><option value="uit">Alles uitgaven</option><option value="in">Alles inkomsten</option><option value="sign">Negatief bedrag = uitgave</option></select></label>
+          <label class="field" for="impDefFreq">Frequentie<select id="impDefFreq"><option value="auto">Automatisch</option><option value="maand">Per maand</option><option value="kwartaal">Per kwartaal</option><option value="jaar">Per jaar</option></select></label>
+        </div>
+        <label class="check" for="impSkipTot"><input type="checkbox" id="impSkipTot" checked> Sla regels met totaal, subtotaal of saldo over</label>
+      </div>
+    </details>
   </div>
 
   <div class="banner" id="sampleBanner" hidden style="margin-top:16px">
@@ -900,10 +905,16 @@ function monthCols(head){
 function openImporter(wb, fileName){
   imp = {wb, fileName};
   $("#impFile").textContent = fileName;
-  const pref = wb.SheetNames.find(n => norm(n) === "regels") || wb.SheetNames.find(n => sheetRows(n).length > 1) || wb.SheetNames[0];
-  $("#impSheet").innerHTML = wb.SheetNames.map(n => { const c = sheetRows(n).length; return `<option value="${esc(n)}" ${n===pref?"selected":""}>${esc(n)} (${c} ${c===1?"rij":"rijen"})</option>`; }).join("");
   $("#importBar").hidden = true;
   $("#importer").hidden = false;
+  $("#importer details").open = false;
+  ["#impDefScope","#impDefType","#impDefFreq"].forEach(s => $(s).value = "auto");
+  $("#impSkipTot").checked = true;
+  // scan every sheet and pick the one with the most budget lines
+  const found = {};
+  for (const n of wb.SheetNames){ try { loadSheet(n); found[n] = imp.lines.length; } catch(e){ found[n] = 0; } }
+  const pref = wb.SheetNames.find(n => norm(n) === "regels" && found[n]) || wb.SheetNames.reduce((a, n) => found[n] > found[a] ? n : a, wb.SheetNames[0]);
+  $("#impSheet").innerHTML = wb.SheetNames.map(n => `<option value="${esc(n)}" ${n===pref?"selected":""}>${esc(n)} (${found[n] ? found[n] + (found[n]===1 ? " regel" : " regels") : "niets gevonden"})</option>`).join("");
   loadSheet(pref);
   $("#importer").scrollIntoView({block:"start", behavior:"smooth"});
 }
@@ -927,22 +938,29 @@ function loadSheet(name, headerRow){
   const hasScope = imp.map.scope >= 0, hasType = imp.map.type >= 0 || imp.map.amtOut >= 0;
   $("#impDefScopeWrap").hidden = hasScope;
   $("#impDefTypeWrap").hidden = hasType;
-  if (!hasType){
-    const neg = body.some(r => typeof r[imp.map.amt] === "number" && r[imp.map.amt] < 0);
-    $("#impDefType").value = neg ? "sign" : "uit";
-  }
   previewImport();
 }
 
+const IN_WORDS = /salaris|loon|inkomen|inkomst|omzet|toeslag|uitkering|kinderbijslag|pensioen|\baow\b|ontvang|opbrengst|verhuur|dividend|bijverdien|freelance|opdracht|teruggave|factur|nettoloon|zakgeld ontv/;
+const SEC_IN = /^(inkomsten|inkomen|ontvangsten|omzet|opbrengsten|baten)\b/;
+const SEC_OUT = /^(uitgaven|vaste lasten|vaste kosten|lasten|kosten|variabele (kosten|lasten|uitgaven)|huishoudelijke uitgaven|reserveringen|sparen)\b/;
 function buildLines(){
-  const m = imp.map, body = imp.rows.slice(imp.head + 1);
+  const m = imp.map, body = imp.rows.slice(imp.head + 1), head = imp.rows[imp.head] || [];
   const defScope = $("#impDefScope").value, defType = $("#impDefType").value, defFreq = $("#impDefFreq").value;
   const skipTot = $("#impSkipTot").checked, useMonths = $("#impMonths").checked && imp.months.length;
   const get = (r, f) => m[f] >= 0 ? r[m[f]] : "";
+  // automatic hints from the sheet itself
+  const sn = imp.sheet.toLowerCase();
+  const sheetScope = /zak|bedrijf|onderneming|bv\b|vof/.test(sn) ? "zakelijk" : /priv|thuis|huishoud/.test(sn) ? "prive" : null;
+  const ht = (cellText(head[m.amt]) + " " + sn).toLowerCase();
+  const headFreq = /jaar|p\.?j\.?\b/.test(ht) ? "jaar" : /kwartaal/.test(ht) ? "kwartaal" : "maand";
+  const hasNeg = m.amt >= 0 && body.some(r => num(r[m.amt]) < 0);
+  let secType = null, secScope = null;
   const lines = [];
   for (const r of body){
     const name = cellText(get(r, "name"));
-    if (skipTot && /^(sub)?tota(al|len)|^saldo|^som\b/i.test(name)) continue;
+    const ln = name.toLowerCase();
+    if (skipTot && /^(sub)?tota(al|len)|^saldo|^som\b|^resultaat|^over\b|^tekort/.test(ln)) continue;
     let amount, freq, type;
     if (useMonths){
       amount = imp.months.reduce((s, i) => s + num(r[i] ?? 0), 0) / 12;
@@ -950,21 +968,34 @@ function buildLines(){
     } else {
       amount = num(get(r, "amt"));
       const f = norm(get(r, "freq"));
-      freq = f.startsWith("kw") ? "kwartaal" : (f.startsWith("ja") || f === "j" || f.startsWith("jr")) ? "jaar" : f.startsWith("ma") || f === "m" ? "maand" : defFreq;
+      freq = f.startsWith("kw") ? "kwartaal" : (f.startsWith("ja") || f === "j" || f.startsWith("jr")) ? "jaar" : f.startsWith("ma") || f === "m" ? "maand" : (defFreq === "auto" ? headFreq : defFreq);
     }
     const out = m.amtOut >= 0 && !useMonths ? num(get(r, "amtOut")) : 0;
+    // section headings like "Inkomsten", "Vaste lasten", "Zakelijk" without an amount
+    if (!amount && !out && name){
+      if (SEC_IN.test(ln)) { secType = "in"; }
+      else if (SEC_OUT.test(ln)) { secType = "uit"; }
+      if (/^zakelijk|^bedrijf|^onderneming/.test(ln)) secScope = "zakelijk";
+      else if (/^priv/.test(ln)) secScope = "prive";
+      continue;
+    }
+    if (!amount && !out) continue;
     if (out && !amount){ amount = out; type = "uit"; }
     else if (m.amtOut >= 0 && !useMonths) type = "in";
-    if (!name && !amount) continue;
     if (!type){
       const t = norm(get(r, "type"));
       if (/^(in|omzet|ontv|bij|credit)/.test(t)) type = "in";
       else if (/^(uit|af|kost|debet|deb)/.test(t)) type = "uit";
-      else type = defType === "sign" ? (amount < 0 ? "uit" : "in") : (m.type >= 0 && defType === "sign" ? "uit" : defType);
+      else if (defType === "in" || defType === "uit") type = defType;
+      else if (defType === "sign") type = amount < 0 ? "uit" : "in";
+      else if (secType) type = secType;
+      else if (hasNeg) type = amount < 0 ? "uit" : "in";
+      else type = IN_WORDS.test(ln + " " + cellText(get(r, "cat")).toLowerCase()) ? "in" : "uit";
     }
     amount = Math.round(Math.abs(amount) * 100) / 100;
     const s = norm(get(r, "scope"));
-    const scope = /^(zak|bedr|bv|vof|eenmanszaak)/.test(s) ? "zakelijk" : /^(priv|thuis|huis)/.test(s) ? "prive" : defScope;
+    const scope = /^(zak|bedr|bv|vof|eenmanszaak)/.test(s) ? "zakelijk" : /^(priv|thuis|huis)/.test(s) ? "prive"
+      : defScope !== "auto" ? defScope : secScope || sheetScope || (m.btw >= 0 && cellText(get(r, "btw")) !== "" ? "zakelijk" : "prive");
     const rawBtw = cellText(get(r, "btw")).replace("%", "").trim();
     let btw = 0;
     if (scope === "zakelijk"){ const b = rawBtw === "" ? 21 : num(rawBtw); btw = Math.round(b > 0 && b < 1 ? b * 100 : b); if (![21,9,0].includes(btw)) btw = 21; }
@@ -979,7 +1010,7 @@ function previewImport(){
   const nIn = lines.filter(l => l.type === "in").length, nZ = lines.filter(l => l.scope === "zakelijk").length;
   $("#impCount").textContent = lines.length
     ? `${lines.length} regels klaar om te importeren: ${nIn} inkomsten, ${lines.length - nIn} uitgaven, ${lines.length - nZ} privé, ${nZ} zakelijk.`
-    : "Nog geen regels gevonden. Kies het juiste tabblad, de rij met kolomnamen en koppel minstens Omschrijving en Bedrag.";
+    : "Op dit tabblad zijn geen bedragen gevonden. Kies een ander tabblad, of open hieronder \"Herkenning aanpassen\".";
   $("#impReplace").disabled = $("#impAppend").disabled = !lines.length;
   $("#impPreview").innerHTML = lines.length ? `<thead><tr><th>Soort</th><th>Type</th><th>Omschrijving</th><th>Categorie</th><th class="r">Bedrag</th><th>Freq.</th><th class="r">BTW</th></tr></thead><tbody>` +
     lines.slice(0, 12).map(l => `<tr><td>${SCOPE_OUT[l.scope]}</td><td>${TYPE_OUT[l.type]}</td><td>${esc(l.name) || "–"}</td><td>${esc(l.cat) || "–"}</td><td class="r">${eur2.format(l.amount)}</td><td>${l.freq}</td><td class="r">${l.scope === "zakelijk" ? l.btw + "%" : "–"}</td></tr>`).join("") +
